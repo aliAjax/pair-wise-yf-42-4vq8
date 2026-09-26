@@ -24,7 +24,12 @@ python3 app.py --db ./data.db --port 8308
 
 ## 核心对象
 
-- `animal`：个体谱系；`pairing`：配对建议；`transfer`：机构和运输记录。
+- `animal`：个体谱系；除`name`、`sex`外，亲缘档案字段均为可选：
+  - `sire_id`/`dam_id`：父本/母本，必须引用已登记动物，父本须为雄性、母本须为雌性；
+  - `birth_date`：出生日期（`YYYY-MM-DD`）；
+  - `litter_no`：同胎编号，同胎个体填写相同编号。
+  - 对已存在的动物用`set_parents`动作补录或更正（可只传需要变更的字段，传`null`可清除）。若新父本/母本已经是该动物的后代，会返回冲突个体并保留原关系。
+- `pairing`：配对建议；`transfer`：机构和运输记录。
 
 ## 主要接口
 
@@ -33,7 +38,18 @@ python3 app.py --db ./data.db --port 8308
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
+- `GET /api/animals/<id>/pedigree`：查看一只动物的三代祖先树（无父母记录的动物照常返回，缺失节点为`null`）。
 - `GET /api/audit`：读取审计记录。
+
+示例：补录亲缘
+
+```bash
+curl -X POST /api/entities/<动物ID>/actions \
+  -H 'X-User-Id: keeper1' -H 'X-Role: registrar' -d '
+  {"action":"set_parents","data":{
+    "sire_id":"<父本ID>","dam_id":"<母本ID>",
+    "birth_date":"2026-03-01","litter_no":"L-01"}}'
+```
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
 

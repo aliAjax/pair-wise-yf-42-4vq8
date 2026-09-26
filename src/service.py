@@ -64,6 +64,41 @@ class DomainService:
             raise NotFoundError("entity not found: " + entity_id)
         return entity
 
+    def pedigree(self, animal_id, generations=3):
+        entity = self.repository.get_entity(animal_id)
+        if not entity or entity["kind"] != "animal":
+            raise NotFoundError("animal not found: " + animal_id)
+        return {
+            "id": entity["id"],
+            "kind": "animal",
+            "generations": generations,
+            "tree": self._pedigree_node(entity, generations, frozenset()),
+        }
+
+    def _pedigree_node(self, entity, depth, trail):
+        data = entity["data"]
+        node = {
+            "id": entity["id"],
+            "name": data.get("name"),
+            "sex": data.get("sex"),
+            "status": entity["status"],
+            "birth_date": data.get("birth_date"),
+            "litter_no": data.get("litter_no"),
+            "sire": None,
+            "dam": None,
+        }
+        if depth <= 0:
+            return node
+        trail = trail | {entity["id"]}
+        for key, field in (("sire", "sire_id"), ("dam", "dam_id")):
+            parent_id = data.get(field)
+            if not parent_id or parent_id in trail:
+                continue
+            parent = self.repository.get_entity(parent_id)
+            if parent and parent["kind"] == "animal":
+                node[key] = self._pedigree_node(parent, depth - 1, trail)
+        return node
+
     def list(self, kind=None, status=None):
         if kind:
             kind = self.rules.normalize_kind(kind)

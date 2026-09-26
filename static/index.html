@@ -17,14 +17,59 @@
   <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
   <p><button onclick="checkHealth()">检查服务状态</button></p>
   <pre id="result">等待操作</pre>
+  <h2>三代血统查询</h2>
+  <p>
+    <input id="animalId" placeholder="动物ID" size="40">
+    <button onclick="loadPedigree()">查看三代祖先</button>
+  </p>
+  <div id="pedigree"></div>
   <h2>常用接口</h2>
   <pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+POST /api/entities/&lt;id&gt;/actions  (animal 支持 set_parents 补录/更正亲缘)
+GET  /api/animals/&lt;id&gt;/pedigree</pre>
 </main>
 <script>
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g,
+    ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+}
+
+function nodeLabel(node) {
+  const parts = [esc(node.name || node.id)];
+  parts.push(node.sex === 'male' ? '♂' : node.sex === 'female' ? '♀' : '未知性别');
+  if (node.birth_date) parts.push('出生 ' + esc(node.birth_date));
+  if (node.litter_no) parts.push('同胎编号 ' + esc(node.litter_no));
+  return parts.join('，') + ' <code>' + esc(node.id) + '</code>';
+}
+
+function renderNode(node, depth) {
+  if (!node) return '<li><em>无记录</em></li>';
+  let html = '<li>' + nodeLabel(node);
+  if (depth > 0) {
+    html += '<ul>'
+      + '<li>父本<ul>' + renderNode(node.sire, depth - 1) + '</ul></li>'
+      + '<li>母本<ul>' + renderNode(node.dam, depth - 1) + '</ul></li>'
+      + '</ul>';
+  }
+  return html + '</li>';
+}
+
+async function loadPedigree() {
+  const id = document.getElementById('animalId').value.trim();
+  const target = document.getElementById('pedigree');
+  if (!id) { target.textContent = '请输入动物ID'; return; }
+  const response = await fetch('/api/animals/' + encodeURIComponent(id) + '/pedigree');
+  const payload = await response.json();
+  if (!response.ok) {
+    target.textContent = '查询失败：' + (payload.error || response.status);
+    return;
+  }
+  target.innerHTML = '<ul>' + renderNode(payload.tree, payload.generations) + '</ul>';
+}
+
 async function checkHealth() {
   const response = await fetch('/health');
   document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
