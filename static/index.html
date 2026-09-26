@@ -9,26 +9,166 @@
     main { max-width: 820px; margin: auto; }
     pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
     button { padding: .5rem .8rem; cursor: pointer; }
+    fieldset { margin: 1rem 0; border: 1px solid #d1d5db; border-radius: 8px; padding: 1rem; }
+    label { display: inline-block; margin: .25rem .75rem .25rem 0; }
+    select, input { padding: .3rem; }
+    .generation { margin: .5rem 0; }
+    .generation h3 { margin: .25rem 0; font-size: 1rem; }
+    .card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: .4rem .6rem; margin: .2rem 0; }
   </style>
 </head>
 <body>
 <main>
   <h1>动物园谱系与繁育协调</h1>
-  <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
+  <p>
+    <button onclick="checkHealth()">检查服务状态</button>
+    <button onclick="loadAnimals()">刷新动物列表</button>
+  </p>
+
+  <fieldset>
+    <legend>登记 / 更正亲缘关系</legend>
+    <p>父本、母本从已登记动物中选择（父本须为雄性，母本须为雌性），可一起记录出生日期和同胎编号。</p>
+    <label>个体 <select id="childSelect"></select></label>
+    <label>父本（雄性） <select id="sireSelect"></select></label>
+    <label>母本（雌性） <select id="damSelect"></select></label>
+    <label>出生日期 <input type="date" id="birthDate"></label>
+    <label>同胎编号 <input id="litterId" placeholder="选填"></label>
+    <button onclick="saveParents()">保存亲缘关系</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>三代祖先</legend>
+    <label>个体 <select id="pedigreeSelect"></select></label>
+    <button onclick="showPedigree()">查看三代祖先</button>
+    <div id="pedigree"></div>
+  </fieldset>
+
   <pre id="result">等待操作</pre>
   <h2>常用接口</h2>
   <pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+POST /api/entities/&lt;id&gt;/actions  (action: set_parents)
+GET  /api/animals/&lt;id&gt;/pedigree</pre>
 </main>
 <script>
+const SEX_LABELS = {male: '雄性', female: '雌性', unknown: '未知'};
+const GENERATION_LABELS = ['第 1 代 · 父母', '第 2 代 · 祖父母', '第 3 代 · 曾祖父母'];
+
+function show(payload) {
+  document.getElementById('result').textContent = JSON.stringify(payload, null, 2);
+}
+
 async function checkHealth() {
   const response = await fetch('/health');
-  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+  show(await response.json());
 }
+
+function fillSelect(select, items, placeholder) {
+  select.innerHTML = '';
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = placeholder;
+  select.appendChild(empty);
+  for (const item of items) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = (item.data.name || '(未命名)') + ' · ' + (SEX_LABELS[item.data.sex] || item.data.sex) + ' [' + item.id + ']';
+    select.appendChild(option);
+  }
+}
+
+async function loadAnimals() {
+  const response = await fetch('/api/animals');
+  const payload = await response.json();
+  const animals = payload.items || [];
+  fillSelect(document.getElementById('childSelect'), animals, '选择个体');
+  fillSelect(document.getElementById('pedigreeSelect'), animals, '选择个体');
+  fillSelect(document.getElementById('sireSelect'), animals.filter(a => a.data.sex === 'male'), '选择父本');
+  fillSelect(document.getElementById('damSelect'), animals.filter(a => a.data.sex === 'female'), '选择母本');
+}
+
+async function saveParents() {
+  const id = document.getElementById('childSelect').value;
+  if (!id) { show({error: '请先选择个体'}); return; }
+  const data = {};
+  const sire = document.getElementById('sireSelect').value;
+  const dam = document.getElementById('damSelect').value;
+  const birth = document.getElementById('birthDate').value;
+  const litter = document.getElementById('litterId').value.trim();
+  if (sire) data.sire_id = sire;
+  if (dam) data.dam_id = dam;
+  if (birth) data.birth_date = birth;
+  if (litter) data.litter_id = litter;
+  const response = await fetch('/api/entities/' + id + '/actions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-User-Id': 'keeper-page', 'X-Role': 'registrar'},
+    body: JSON.stringify({action: 'set_parents', data})
+  });
+  show(await response.json());
+}
+
+function describe(node) {
+  const parts = [node.name || '(未命名)', SEX_LABELS[node.sex] || node.sex || ''];
+  if (node.birth_date) parts.push('出生 ' + node.birth_date);
+  if (node.litter_id) parts.push('同胎 ' + node.litter_id);
+  return parts.filter(Boolean).join(' · ') + ' [' + node.id + ']';
+}
+
+function card(node) {
+  const div = document.createElement('div');
+  div.className = 'card';
+  div.textContent = describe(node);
+  return div;
+}
+
+function collect(node, depth, generations) {
+  if (!node) return;
+  if (depth >= 1 && depth <= 3) generations[depth - 1].push(node);
+  if (depth < 3) {
+    collect(node.sire, depth + 1, generations);
+    collect(node.dam, depth + 1, generations);
+  }
+}
+
+async function showPedigree() {
+  const id = document.getElementById('pedigreeSelect').value;
+  if (!id) { show({error: '请先选择个体'}); return; }
+  const response = await fetch('/api/animals/' + id + '/pedigree');
+  const payload = await response.json();
+  show(payload);
+  const container = document.getElementById('pedigree');
+  container.innerHTML = '';
+  if (!response.ok) return;
+  const root = document.createElement('div');
+  root.className = 'generation';
+  const rootTitle = document.createElement('h3');
+  rootTitle.textContent = '本人';
+  root.appendChild(rootTitle);
+  root.appendChild(card(payload));
+  container.appendChild(root);
+  const generations = [[], [], []];
+  collect(payload, 0, generations);
+  generations.forEach((members, index) => {
+    const section = document.createElement('div');
+    section.className = 'generation';
+    const title = document.createElement('h3');
+    title.textContent = GENERATION_LABELS[index];
+    section.appendChild(title);
+    if (!members.length) {
+      const none = document.createElement('div');
+      none.className = 'card';
+      none.textContent = '无记录';
+      section.appendChild(none);
+    } else {
+      members.forEach(node => section.appendChild(card(node)));
+    }
+    container.appendChild(section);
+  });
+}
+
+loadAnimals();
 </script>
 </body>
 </html>

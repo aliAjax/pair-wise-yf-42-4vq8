@@ -33,9 +33,17 @@ python3 app.py --db ./data.db --port 8308
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
+- `GET /api/animals/<id>/pedigree`：查看一只动物的三代祖先（父母、祖父母、曾祖父母）。
 - `GET /api/audit`：读取审计记录。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
+
+## 亲缘档案
+
+- 通过动作`set_parents`为动物登记或更正亲缘关系：`POST /api/entities/<id>/actions`，请求体`{"action":"set_parents","data":{"sire_id":"...","dam_id":"...","birth_date":"YYYY-MM-DD","litter_id":"..."}}`，可由`admin`或`registrar`执行，不改变动物状态。
+- 父本、母本必须按 ID 选择已登记动物，父本须为雄性、母本须为雌性；出生日期和同胎编号可随关系一起记录。
+- 补录或更正时，如果新父本或母本已经是该动物的后代，请求返回 409 并指出冲突个体，原有关系保持不变。
+- 没有父母记录的旧档案照常查询，谱系中对应位置为空。
 
 ## 测试
 

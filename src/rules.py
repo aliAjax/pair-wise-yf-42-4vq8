@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from .domain import (
     ConflictError,
@@ -39,18 +39,81 @@ def _validate_pairing(actor, entity, data, lookup):
     return {"approved_by": actor.user_id}
 
 
+def _descendant_ids(lookup, animal_id):
+    """Ids of animals that list ``animal_id`` as an ancestor at any depth."""
+    descendants = set()
+    stack = [animal_id]
+    while stack:
+        current = stack.pop()
+        for field in ("sire_id", "dam_id"):
+            for row in lookup("animal", field, current) or []:
+                child_id = row["id"]
+                if child_id != animal_id and child_id not in descendants:
+                    descendants.add(child_id)
+                    stack.append(child_id)
+    return descendants
+
+
+def _validate_set_parents(actor, entity, data, lookup):
+    for key in ("sire_id", "dam_id"):
+        if key in data and not data.get(key):
+            raise ValidationError(key + " must be a non-empty animal id")
+    sire_id = data.get("sire_id")
+    dam_id = data.get("dam_id")
+    if not sire_id and not dam_id:
+        raise ValidationError("set_parents requires sire_id or dam_id")
+    animal_id = entity["id"]
+    for field, parent_id, required_sex in (
+        ("sire_id", sire_id, "male"),
+        ("dam_id", dam_id, "female"),
+    ):
+        if not parent_id:
+            continue
+        if parent_id == animal_id:
+            raise ValidationError("animal cannot be its own parent")
+        parent = _find_one(lookup, "animal", "id", parent_id)
+        if not parent:
+            raise ValidationError(
+                field + " must reference a registered animal: " + str(parent_id)
+            )
+        actual_sex = parent["data"].get("sex")
+        if actual_sex != required_sex:
+            raise ValidationError(
+                "%s must be %s, got sex %s for %s"
+                % (field, required_sex, actual_sex, parent_id)
+            )
+    birth_date = data.get("birth_date")
+    if birth_date is not None:
+        try:
+            date.fromisoformat(str(birth_date))
+        except (TypeError, ValueError):
+            raise ValidationError("birth_date must be an ISO date (YYYY-MM-DD)")
+    if "litter_id" in data and not str(data.get("litter_id") or "").strip():
+        raise ValidationError("litter_id must be a non-empty string")
+    descendants = _descendant_ids(lookup, animal_id) if lookup else set()
+    for parent_id in (sire_id, dam_id):
+        if parent_id and parent_id in descendants:
+            conflict = _find_one(lookup, "animal", "id", parent_id)
+            name = conflict["data"].get("name") or "unnamed"
+            raise ConflictError(
+                "parent conflict: %s (%s) is already a descendant of %s; "
+                "original parents kept" % (parent_id, name, animal_id)
+            )
+    return {}
+
+
 CUSTOM_CREATE = {'animal': _validate_animal}
-CUSTOM_TRANSITIONS = {('pairing', 'approve'): _validate_pairing}
+CUSTOM_TRANSITIONS = {('pairing', 'approve'): _validate_pairing, ('animal', 'set_parents'): _validate_set_parents}
 
 
 class RuleEngine:
     ALIASES = {'animals': 'animal', 'pairings': 'pairing', 'transfers': 'transfer'}
     INITIAL_STATUS = {'animal': 'active', 'pairing': 'proposed', 'transfer': 'planned'}
-    TRANSITIONS = {'animal': {'mark_deceased': (('active',), 'deceased'), 'quarantine_animal': (('active',), 'quarantined'), 'release_quarantine': (('quarantined',), 'active')}, 'pairing': {'approve': (('proposed',), 'approved'), 'reject': (('proposed',), 'rejected'), 'complete': (('approved',), 'completed')}, 'transfer': {'authorize': (('planned',), 'authorized'), 'ship': (('authorized',), 'in_transit'), 'arrive': (('in_transit',), 'completed')}}
+    TRANSITIONS = {'animal': {'mark_deceased': (('active',), 'deceased'), 'quarantine_animal': (('active',), 'quarantined'), 'release_quarantine': (('quarantined',), 'active'), 'set_parents': (('active', 'quarantined', 'deceased'), None)}, 'pairing': {'approve': (('proposed',), 'approved'), 'reject': (('proposed',), 'rejected'), 'complete': (('approved',), 'completed')}, 'transfer': {'authorize': (('planned',), 'authorized'), 'ship': (('authorized',), 'in_transit'), 'arrive': (('in_transit',), 'completed')}}
     CREATE_REQUIRED = {'animal': ('name', 'sex'), 'pairing': ('proposed_by',), 'transfer': ('animal_id', 'from_institution', 'to_institution')}
     ACTION_REQUIRED = {('animal', 'mark_deceased'): ('cause',), ('animal', 'quarantine_animal'): ('reason',), ('pairing', 'approve'): ('sire_id', 'dam_id', 'approvals'), ('pairing', 'reject'): ('reason',), ('pairing', 'complete'): ('offspring_ids',), ('transfer', 'authorize'): ('permit_id',), ('transfer', 'ship'): ('transport_id',), ('transfer', 'arrive'): ('arrival_date',)}
     CREATE_ROLES = {'animal': ('admin', 'registrar'), 'pairing': ('admin', 'coordinator'), 'transfer': ('admin', 'registrar')}
-    ROLE_ACTIONS = {'mark_deceased': ('admin', 'veterinarian'), 'quarantine_animal': ('admin', 'veterinarian'), 'release_quarantine': ('admin', 'veterinarian'), 'approve': ('admin', 'coordinator'), 'reject': ('admin', 'coordinator'), 'complete': ('admin', 'coordinator'), 'authorize': ('admin', 'registrar'), 'ship': ('admin', 'registrar'), 'arrive': ('admin', 'registrar')}
+    ROLE_ACTIONS = {'mark_deceased': ('admin', 'veterinarian'), 'quarantine_animal': ('admin', 'veterinarian'), 'release_quarantine': ('admin', 'veterinarian'), 'set_parents': ('admin', 'registrar'), 'approve': ('admin', 'coordinator'), 'reject': ('admin', 'coordinator'), 'complete': ('admin', 'coordinator'), 'authorize': ('admin', 'registrar'), 'ship': ('admin', 'registrar'), 'arrive': ('admin', 'registrar')}
 
     def normalize_kind(self, kind):
         return self.ALIASES.get(kind, kind)
@@ -90,6 +153,8 @@ class RuleEngine:
         if not transition:
             raise InvalidTransition("unknown action %s for %s" % (action, kind))
         allowed_statuses, next_status = transition
+        if next_status is None:
+            next_status = entity["status"]
         if entity["status"] not in allowed_statuses:
             raise InvalidTransition(
                 "cannot %s from status %s" % (action, entity["status"])

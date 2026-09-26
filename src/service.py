@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from .audit import AuditTrail
-from .domain import ConflictError, NotFoundError
+from .domain import ConflictError, NotFoundError, ValidationError
 from .rules import RuleEngine
 
 
@@ -63,6 +63,37 @@ class DomainService:
         if not entity:
             raise NotFoundError("entity not found: " + entity_id)
         return entity
+
+    def pedigree(self, animal_id, generations=3):
+        entity = self.repository.get_entity(animal_id)
+        if not entity:
+            raise NotFoundError("entity not found: " + animal_id)
+        if entity["kind"] != "animal":
+            raise ValidationError("pedigree is only available for animals")
+        return self._pedigree_node(entity, int(generations))
+
+    def _pedigree_node(self, entity, depth):
+        data = entity["data"]
+        node = {
+            "id": entity["id"],
+            "name": data.get("name"),
+            "sex": data.get("sex"),
+            "status": entity["status"],
+            "birth_date": data.get("birth_date"),
+            "litter_id": data.get("litter_id"),
+            "sire": None,
+            "dam": None,
+        }
+        if depth > 0:
+            for key, parent_id in (
+                ("sire", data.get("sire_id")),
+                ("dam", data.get("dam_id")),
+            ):
+                if parent_id:
+                    parent = self.repository.get_entity(parent_id)
+                    if parent and parent["kind"] == "animal":
+                        node[key] = self._pedigree_node(parent, depth - 1)
+        return node
 
     def list(self, kind=None, status=None):
         if kind:
